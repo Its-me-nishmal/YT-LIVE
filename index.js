@@ -12,13 +12,13 @@ function logError(source, error) {
 
 // CONFIGURATION
 const CONFIG = {
-  width: 1280, // lighter resolution
+  width: 1280,
   height: 720,
-  updateInterval: 1000, // update frame every 1s
+  updateInterval: 5000, // fetch and update every 5s
   channelId: 'UC5vPGxCutFL9onTJHQN-UsA',
-  streamId: 'm6Iyi8D42do',
+  streamId: 'NCkXV1g1Zb8',
   audioFile: './play.mp3',
-  frameFile: './frame.png', // temporary PNG file
+  frameFile: './frame.png',
   streamUrl: 'rtmp://a.rtmp.youtube.com/live2/s4m4-c1xt-d0vv-vayh-11ay'
 };
 
@@ -35,7 +35,6 @@ class LiveCounter {
       liveViewers: 0,
       likes: 0
     };
-    this.animatedValues = {};
     this.isRunning = true;
 
     this.init();
@@ -57,7 +56,6 @@ class LiveCounter {
 
       await this.fetchData();
       this.startFFmpegLoop();
-      this.startFrameUpdates();
       this.setupIntervals();
     } catch (error) {
       logError('Initialization', error);
@@ -66,13 +64,13 @@ class LiveCounter {
   }
 
   setupIntervals() {
-    setInterval(() => {
-      if (this.isRunning) this.fetchChannelData();
-    }, 60000);
-
-    setInterval(() => {
-      if (this.isRunning) this.fetchStreamData();
-    }, 10000);
+    // Single interval for all data fetching - every 5 seconds
+    setInterval(async () => {
+      if (this.isRunning) {
+        await this.fetchData();
+        this.renderFrame(); // Render immediately after data update
+      }
+    }, CONFIG.updateInterval);
   }
 
   startFFmpegLoop() {
@@ -120,9 +118,10 @@ class LiveCounter {
       const counts = Object.fromEntries(parsed.counts.map(c => [c.value, c.count]));
 
       this.data.channelName = user.name || 'Unknown';
-      this.updateAnimatedValue('subscribers', counts.subscribers);
-      this.updateAnimatedValue('totalViews', counts.views);
-      this.updateAnimatedValue('videos', counts.videos);
+      // Direct assignment - no animation
+      this.data.subscribers = parseInt(counts.subscribers) || 0;
+      this.data.totalViews = parseInt(counts.views) || 0;
+      this.data.videos = parseInt(counts.videos) || 0;
 
       if (user.pfp && !this.data.channelAvatar) {
         try {
@@ -141,19 +140,21 @@ class LiveCounter {
       const data = await this.httpGet(`https://mixerno.space/api/youtube-stream-counter/user/${CONFIG.streamId}`);
       const parsed = JSON.parse(data);
       const counts = Object.fromEntries(parsed.counts.map(c => [c.value, c.count || 0]));
-      this.updateAnimatedValue('liveViewers', counts.viewers);
-      this.updateAnimatedValue('likes', counts.likes);
+      
+      // Direct assignment - no animation
+      this.data.liveViewers = parseInt(counts.viewers) || 0;
+      this.data.likes = parseInt(counts.likes) || 0;
     } catch (error) {
       logError('Stream Data', error.message);
-      this.updateAnimatedValue('liveViewers', 0);
-      this.updateAnimatedValue('likes', 0);
+      this.data.liveViewers = 0;
+      this.data.likes = 0;
     }
   }
 
   httpGet(url) {
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Request timed out')), 3000);
-      https.get(url, { timeout: 2000 }, res => {
+      const timeout = setTimeout(() => reject(new Error('Request timed out')), 2000); // Faster timeout
+      https.get(url, { timeout: 1500 }, res => {
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => {
@@ -166,20 +167,6 @@ class LiveCounter {
         reject(error);
       });
     });
-  }
-
-  updateAnimatedValue(key, targetValue) {
-    if (!this.animatedValues[key]) this.animatedValues[key] = { current: 0, target: 0 };
-    this.animatedValues[key].target = parseInt(targetValue) || 0;
-  }
-
-  interpolateValues() {
-    for (const key in this.animatedValues) {
-      const anim = this.animatedValues[key];
-      const diff = anim.target - anim.current;
-      anim.current += diff * 0.15;
-      this.data[key] = Math.round(anim.current);
-    }
   }
 
   drawBackground() {
@@ -269,7 +256,6 @@ class LiveCounter {
   }
 
   renderFrame() {
-    this.interpolateValues();
     this.drawBackground();
     this.drawLiveBadge();
     this.drawChannelHeader();
@@ -277,13 +263,6 @@ class LiveCounter {
 
     const buffer = this.canvas.toBuffer('image/png');
     fs.writeFileSync(CONFIG.frameFile, buffer);
-  }
-
-  startFrameUpdates() {
-    this.renderFrame(); // render first frame immediately
-    setInterval(() => {
-      if (this.isRunning) this.renderFrame();
-    }, CONFIG.updateInterval);
   }
 
   stop() {
