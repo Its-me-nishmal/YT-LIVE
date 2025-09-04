@@ -14,7 +14,7 @@ function logError(source, error) {
 const CONFIG = {
   width: 1280,
   height: 720,
-  updateInterval: 5000, // fetch and update every 5s
+  updateInterval: 100, // 100ms → 10 FPS
   channelId: 'UC5vPGxCutFL9onTJHQN-UsA',
   streamId: 'NCkXV1g1Zb8',
   audioFile: './play.mp3',
@@ -35,6 +35,7 @@ class LiveCounter {
       liveViewers: 0,
       likes: 0
     };
+    this.animatedValues = {};
     this.isRunning = true;
 
     this.init();
@@ -56,6 +57,7 @@ class LiveCounter {
 
       await this.fetchData();
       this.startFFmpegLoop();
+      this.startFrameUpdates();
       this.setupIntervals();
     } catch (error) {
       logError('Initialization', error);
@@ -64,34 +66,32 @@ class LiveCounter {
   }
 
   setupIntervals() {
-    // Single interval for all data fetching - every 5 seconds
-    setInterval(async () => {
-      if (this.isRunning) {
-        await this.fetchData();
-        this.renderFrame(); // Render immediately after data update
-      }
-    }, CONFIG.updateInterval);
+    setInterval(() => { if (this.isRunning) this.fetchChannelData(); }, 60000);
+    setInterval(() => { if (this.isRunning) this.fetchStreamData(); }, 10000);
   }
 
   startFFmpegLoop() {
     const args = [
       '-re',
       '-loop', '1',
-      '-framerate', '2',
+      '-framerate', '10', // match 10 FPS
       '-i', CONFIG.frameFile,
       '-i', CONFIG.audioFile,
       '-c:v', 'libx264',
       '-preset', 'veryfast',
-      '-crf', '28',
+      '-b:v', '6800k',       // Recommended YouTube bitrate
+      '-maxrate', '6800k',
+      '-bufsize', '13600k',
+      '-crf', '23',
       '-c:a', 'aac',
-      '-b:a', '96k',
+      '-b:a', '128k',
       '-ar', '44100',
       '-ac', '2',
       '-f', 'flv',
       CONFIG.streamUrl
     ];
 
-    console.log('⚡ Starting lightweight YouTube Live Stream...');
+    console.log('⚡ Starting YouTube Live Stream with recommended bitrate...');
     this.ffmpegProcess = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
 
     this.ffmpegProcess.stderr.on('data', data => {
@@ -118,10 +118,9 @@ class LiveCounter {
       const counts = Object.fromEntries(parsed.counts.map(c => [c.value, c.count]));
 
       this.data.channelName = user.name || 'Unknown';
-      // Direct assignment - no animation
-      this.data.subscribers = parseInt(counts.subscribers) || 0;
-      this.data.totalViews = parseInt(counts.views) || 0;
-      this.data.videos = parseInt(counts.videos) || 0;
+      this.updateAnimatedValue('subscribers', counts.subscribers);
+      this.updateAnimatedValue('totalViews', counts.views);
+      this.updateAnimatedValue('videos', counts.videos);
 
       if (user.pfp && !this.data.channelAvatar) {
         try {
@@ -140,33 +139,38 @@ class LiveCounter {
       const data = await this.httpGet(`https://mixerno.space/api/youtube-stream-counter/user/${CONFIG.streamId}`);
       const parsed = JSON.parse(data);
       const counts = Object.fromEntries(parsed.counts.map(c => [c.value, c.count || 0]));
-      
-      // Direct assignment - no animation
-      this.data.liveViewers = parseInt(counts.viewers) || 0;
-      this.data.likes = parseInt(counts.likes) || 0;
+      this.updateAnimatedValue('liveViewers', counts.viewers);
+      this.updateAnimatedValue('likes', counts.likes);
     } catch (error) {
       logError('Stream Data', error.message);
-      this.data.liveViewers = 0;
-      this.data.likes = 0;
+      this.updateAnimatedValue('liveViewers', 0);
+      this.updateAnimatedValue('likes', 0);
     }
   }
 
   httpGet(url) {
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Request timed out')), 2000); // Faster timeout
-      https.get(url, { timeout: 1500 }, res => {
+      const timeout = setTimeout(() => reject(new Error('Request timed out')), 3000);
+      https.get(url, { timeout: 2000 }, res => {
         let data = '';
         res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          clearTimeout(timeout);
-          resolve(data);
-        });
-      }).on('error', error => {
-        clearTimeout(timeout);
-        logError('HTTP GET', `${url} → ${error.message}`);
-        reject(error);
-      });
+        res.on('end', () => { clearTimeout(timeout); resolve(data); });
+      }).on('error', error => { clearTimeout(timeout); logError('HTTP GET', `${url} → ${error.message}`); reject(error); });
     });
+  }
+
+  updateAnimatedValue(key, targetValue) {
+    if (!this.animatedValues[key]) this.animatedValues[key] = { current: 0, target: 0 };
+    this.animatedValues[key].target = parseInt(targetValue) || 0;
+  }
+
+  interpolateValues() {
+    for (const key in this.animatedValues) {
+      const anim = this.animatedValues[key];
+      const diff = anim.target - anim.current;
+      anim.current += diff * 0.15;
+      this.data[key] = Math.round(anim.current);
+    }
   }
 
   drawBackground() {
@@ -228,10 +232,8 @@ class LiveCounter {
 
     stats.forEach((stat, index) => {
       const x = startX + index * (cardWidth + gap);
-
       ctx.fillStyle = 'rgba(255,255,255,0.1)';
       ctx.fillRect(x, y, cardWidth, cardHeight);
-
       ctx.strokeStyle = 'rgba(255,255,255,0.2)';
       ctx.lineWidth = 1;
       ctx.strokeRect(x, y, cardWidth, cardHeight);
@@ -256,6 +258,7 @@ class LiveCounter {
   }
 
   renderFrame() {
+    this.interpolateValues();
     this.drawBackground();
     this.drawLiveBadge();
     this.drawChannelHeader();
@@ -265,26 +268,21 @@ class LiveCounter {
     fs.writeFileSync(CONFIG.frameFile, buffer);
   }
 
+  startFrameUpdates() {
+    this.renderFrame(); // render first frame
+    setInterval(() => { if (this.isRunning) this.renderFrame(); }, CONFIG.updateInterval);
+  }
+
   stop() {
     console.log('🛑 Stopping Live Stream...');
     this.isRunning = false;
-
-    if (this.ffmpegProcess && !this.ffmpegProcess.killed) {
-      this.ffmpegProcess.kill('SIGTERM');
-    }
+    if (this.ffmpegProcess && !this.ffmpegProcess.killed) this.ffmpegProcess.kill('SIGTERM');
     console.log('✅ Live Stream stopped.');
   }
 }
 
 // Graceful exit
-process.on('SIGINT', () => { if (global.liveCounter) global.liveCounter.stop(); process.exit(0); });
-process.on('SIGTERM', () => { if (global.liveCounter) global.liveCounter.stop(); process.exit(0); });
-
-console.log('🚀 Starting lightweight YouTube Live Counter...');
-if (!fs.existsSync(CONFIG.audioFile)) {
-  logError('Startup', `Audio file "${CONFIG.audioFile}" not found!`);
-  process.exit(1);
-}
+process.on('SIGINT', () => { if (global.liveCounter) global.liveCounter.stop(); process.exit(); });
+process.on('SIGTERM', () => { if (global.liveCounter) global.liveCounter.stop(); process.exit(); });
 
 global.liveCounter = new LiveCounter();
-module.exports = LiveCounter;
