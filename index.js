@@ -7,27 +7,25 @@ const path = require('path');
 // Centralized error logger
 function logError(source, error) {
   const timestamp = new Date().toISOString();
-  console.error(`\n❌ [${timestamp}] [${source}]`, error);
+  console.error(`❌ [${timestamp}] [${source}]`, error);
 }
 
-// Configuration
+// CONFIGURATION
 const CONFIG = {
-  width: 1920,
-  height: 1080,
-  fps: 30,
+  width: 1280, // lighter resolution
+  height: 720,
+  updateInterval: 1000, // update frame every 1s
   channelId: 'UC5vPGxCutFL9onTJHQN-UsA',
-  streamId: 'rXPc_BcxybQ',
-  outputFile: null,
-  streamUrl: 'rtmp://a.rtmp.youtube.com/live2/s4m4-c1xt-d0vv-vayh-11ay',
-  duration: 0,
-  audioFile: './play.mp3'
+  streamId: 'm6Iyi8D42do',
+  audioFile: './play.mp3',
+  frameFile: './frame.png', // temporary PNG file
+  streamUrl: 'rtmp://a.rtmp.youtube.com/live2/s4m4-c1xt-d0vv-vayh-11ay'
 };
 
 class LiveCounter {
   constructor() {
     this.canvas = createCanvas(CONFIG.width, CONFIG.height);
     this.ctx = this.canvas.getContext('2d');
-    this.frame = 0;
     this.data = {
       channelName: 'Loading...',
       channelAvatar: null,
@@ -38,19 +36,14 @@ class LiveCounter {
       likes: 0
     };
     this.animatedValues = {};
-    this.ffmpegProcess = null;
-
-    this.pulsePhase = 0;
     this.isRunning = true;
-    this.startTime = Date.now();
-    this.dataIntervals = [];
 
     this.init();
   }
 
   async init() {
     try {
-      if (CONFIG.audioFile && !fs.existsSync(CONFIG.audioFile)) {
+      if (!fs.existsSync(CONFIG.audioFile)) {
         logError('Init', `Audio file not found: ${CONFIG.audioFile}`);
         process.exit(1);
       }
@@ -63,114 +56,70 @@ class LiveCounter {
       }
 
       await this.fetchData();
-      this.setupFFmpeg();
-      this.startAnimation();
-
-      const channelDataInterval = setInterval(() => {
-        if (this.isRunning) this.fetchChannelData();
-      }, 60000);
-
-      const streamDataInterval = setInterval(() => {
-        if (this.isRunning) this.fetchStreamData();
-      }, 10000);
-
-      this.dataIntervals.push(channelDataInterval, streamDataInterval);
+      this.startFFmpegLoop();
+      this.startFrameUpdates();
+      this.setupIntervals();
     } catch (error) {
       logError('Initialization', error);
       this.stop();
     }
   }
 
-  setupFFmpeg() {
+  setupIntervals() {
+    setInterval(() => {
+      if (this.isRunning) this.fetchChannelData();
+    }, 60000);
+
+    setInterval(() => {
+      if (this.isRunning) this.fetchStreamData();
+    }, 10000);
+  }
+
+  startFFmpegLoop() {
     const args = [
-      '-f', 'rawvideo',
-      '-vcodec', 'rawvideo',
-      '-pix_fmt', 'rgba',
-      '-s', `${CONFIG.width}x${CONFIG.height}`,
-      '-r', CONFIG.fps.toString(),
-      '-i', '-',
-      '-stream_loop', '-1',
+      '-re',
+      '-loop', '1',
+      '-framerate', '2',
+      '-i', CONFIG.frameFile,
       '-i', CONFIG.audioFile,
       '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-tune', 'zerolatency',
-      '-crf', '30',
-      '-maxrate', '7000k',
-      '-bufsize', '4000k',
-      '-pix_fmt', 'yuv420p',
-      '-g', '30',
-      '-threads', '0',
-      '-x264-params', 'sliced-threads=1:sync-lookahead=0',
+      '-preset', 'veryfast',
+      '-crf', '28',
       '-c:a', 'aac',
       '-b:a', '96k',
       '-ar', '44100',
       '-ac', '2',
-      '-map', '0:v',
-      '-map', '1:a',
       '-f', 'flv',
       CONFIG.streamUrl
     ];
 
-    console.log('⚡ Starting MAXIMUM PERFORMANCE YouTube Live Stream...');
-    console.log(`🚀 Encoding: Ultra-fast preset for 30 FPS delivery`);
+    console.log('⚡ Starting lightweight YouTube Live Stream...');
+    this.ffmpegProcess = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
 
-    this.ffmpegProcess = spawn('ffmpeg', args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      detached: false
-    });
-
-    this.ffmpegProcess.stdin.on('error', (error) => {
-      if (error.code !== 'EPIPE') {
-        logError('FFmpeg stdin', error);
-      }
-    });
-
-    this.ffmpegProcess.stderr.on('data', (data) => {
+    this.ffmpegProcess.stderr.on('data', data => {
       const message = data.toString();
-      if (message.includes('frame=')) {
-        if (this.frame % 150 === 0) {
-          const bitrateMatch = message.match(/bitrate=\s*([0-9.]+)kbits\/s/);
-          const fpsMatch = message.match(/fps=\s*([0-9.]+)/);
-          if (bitrateMatch && fpsMatch) {
-            const currentFps = parseFloat(fpsMatch[1]);
-            const status = currentFps >= 25 ? '✅' : currentFps >= 20 ? '⚠️' : '❌';
-            console.log(`${status} Bitrate: ${bitrateMatch[1]} Kbps | FPS: ${currentFps} | Frame: ${this.frame}`);
-          }
-        }
-      } else if (message.toLowerCase().includes('error')) {
+      if (message.toLowerCase().includes('error')) {
         logError('FFmpeg stderr', message);
       }
     });
 
-    this.ffmpegProcess.on('error', (error) => {
-      logError('FFmpeg process', error);
-    });
-
-    this.ffmpegProcess.on('close', (code) => {
-      console.log(`\n📹 FFmpeg exited with code ${code}`);
+    this.ffmpegProcess.on('close', code => {
+      console.log(`📹 FFmpeg exited with code ${code}`);
     });
   }
 
   async fetchData() {
-    try {
-      await Promise.all([
-        this.fetchChannelData(),
-        this.fetchStreamData()
-      ]);
-    } catch (error) {
-      logError('Fetch Data', error);
-    }
+    await Promise.all([this.fetchChannelData(), this.fetchStreamData()]);
   }
 
   async fetchChannelData() {
     try {
       const data = await this.httpGet(`https://mixerno.space/api/youtube-channel-counter/user/${CONFIG.channelId}`);
-      const parsedData = JSON.parse(data);
+      const parsed = JSON.parse(data);
+      const user = Object.fromEntries(parsed.user.map(u => [u.value, u.count]));
+      const counts = Object.fromEntries(parsed.counts.map(c => [c.value, c.count]));
 
-      const user = Object.fromEntries(parsedData.user.map(u => [u.value, u.count]));
-      const counts = Object.fromEntries(parsedData.counts.map(c => [c.value, c.count]));
-
-      this.data.channelName = user.name || 'Unknown Channel';
+      this.data.channelName = user.name || 'Unknown';
       this.updateAnimatedValue('subscribers', counts.subscribers);
       this.updateAnimatedValue('totalViews', counts.views);
       this.updateAnimatedValue('videos', counts.videos);
@@ -190,10 +139,8 @@ class LiveCounter {
   async fetchStreamData() {
     try {
       const data = await this.httpGet(`https://mixerno.space/api/youtube-stream-counter/user/${CONFIG.streamId}`);
-      const parsedData = JSON.parse(data);
-
-      const counts = Object.fromEntries(parsedData.counts.map(c => [c.value, c.count || 0]));
-
+      const parsed = JSON.parse(data);
+      const counts = Object.fromEntries(parsed.counts.map(c => [c.value, c.count || 0]));
       this.updateAnimatedValue('liveViewers', counts.viewers);
       this.updateAnimatedValue('likes', counts.likes);
     } catch (error) {
@@ -205,18 +152,15 @@ class LiveCounter {
 
   httpGet(url) {
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Request timed out'));
-      }, 3000);
-
-      https.get(url, { timeout: 2000 }, (res) => {
+      const timeout = setTimeout(() => reject(new Error('Request timed out')), 3000);
+      https.get(url, { timeout: 2000 }, res => {
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => {
           clearTimeout(timeout);
           resolve(data);
         });
-      }).on('error', (error) => {
+      }).on('error', error => {
         clearTimeout(timeout);
         logError('HTTP GET', `${url} → ${error.message}`);
         reject(error);
@@ -225,9 +169,7 @@ class LiveCounter {
   }
 
   updateAnimatedValue(key, targetValue) {
-    if (!this.animatedValues[key]) {
-      this.animatedValues[key] = { current: 0, target: 0 };
-    }
+    if (!this.animatedValues[key]) this.animatedValues[key] = { current: 0, target: 0 };
     this.animatedValues[key].target = parseInt(targetValue) || 0;
   }
 
@@ -235,83 +177,88 @@ class LiveCounter {
     for (const key in this.animatedValues) {
       const anim = this.animatedValues[key];
       const diff = anim.target - anim.current;
-      if (Math.abs(diff) > 1) {
-        anim.current += diff * 0.15;
-      } else {
-        anim.current = anim.target;
-      }
+      anim.current += diff * 0.15;
       this.data[key] = Math.round(anim.current);
     }
   }
 
   drawBackground() {
-    const gradient = this.ctx.createLinearGradient(0, 0, CONFIG.width, CONFIG.height);
+    const ctx = this.ctx;
+    const gradient = ctx.createLinearGradient(0, 0, CONFIG.width, CONFIG.height);
     gradient.addColorStop(0, '#0f0f23');
     gradient.addColorStop(1, '#16213e');
-
-    this.ctx.fillStyle = gradient;
-    this.ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
   }
 
   drawLiveBadge() {
-    const x = CONFIG.width / 2;
-    const y = 80;
-    const scale = 1 + Math.sin(this.pulsePhase) * 0.05;
-    this.pulsePhase += 0.05;
-
-    this.ctx.save();
-    this.ctx.translate(x, y);
-    this.ctx.scale(scale, scale);
-
-    this.ctx.fillStyle = '#ff0000';
-    this.ctx.fillRect(-100, -25, 200, 50);
-
-    this.ctx.fillStyle = 'white';
-    this.ctx.font = 'bold 28px Arial';
-    this.ctx.textAlign = 'center';
-    this.ctx.textBaseline = 'middle';
-    this.ctx.fillText('🔴 LIVE', 0, 0);
-
-    this.ctx.restore();
+    const ctx = this.ctx;
+    ctx.fillStyle = '#ff0000';
+    ctx.fillRect(CONFIG.width / 2 - 100, 50, 200, 50);
+    ctx.fillStyle = 'white';
+    ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🔴 LIVE', CONFIG.width / 2, 75);
   }
 
   drawChannelHeader() {
+    const ctx = this.ctx;
     const centerX = CONFIG.width / 2;
     const y = 200;
 
     if (this.data.channelAvatar) {
-      this.ctx.save();
-      this.ctx.beginPath();
-      this.ctx.arc(centerX - 150, y, 50, 0, Math.PI * 2);
-      this.ctx.clip();
-      this.ctx.drawImage(this.data.channelAvatar, centerX - 200, y - 50, 100, 100);
-      this.ctx.restore();
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(centerX - 150, y, 50, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(this.data.channelAvatar, centerX - 200, y - 50, 100, 100);
+      ctx.restore();
     }
 
-    this.ctx.fillStyle = '#ffffff';
-    this.ctx.font = 'bold 48px Arial';
-    this.ctx.textAlign = 'left';
-    this.ctx.textBaseline = 'middle';
-    this.ctx.fillText(this.data.channelName, centerX - 50, y);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 48px Arial';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this.data.channelName, centerX - 50, y);
   }
 
-  drawStatCard(x, y, width, height, value, label, color) {
-    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-    this.ctx.fillRect(x, y, width, height);
+  drawStats() {
+    const ctx = this.ctx;
+    const cardWidth = 200;
+    const cardHeight = 120;
+    const gap = 20;
+    const stats = [
+      { key: 'subscribers', label: 'Subscribers', color: '#ff6b6b' },
+      { key: 'totalViews', label: 'Total Views', color: '#4ecdc4' },
+      { key: 'videos', label: 'Videos', color: '#45b7d1' },
+      { key: 'liveViewers', label: 'Live Viewers', color: '#ff4757' },
+      { key: 'likes', label: 'Stream Likes', color: '#ffa502' }
+    ];
 
-    this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-    this.ctx.lineWidth = 1;
-    this.ctx.strokeRect(x, y, width, height);
+    const startX = (CONFIG.width - (stats.length * cardWidth + gap * (stats.length - 1))) / 2;
+    const y = CONFIG.height - cardHeight - 50;
 
-    this.ctx.fillStyle = color;
-    this.ctx.font = 'bold 56px Arial';
-    this.ctx.textAlign = 'center';
-    this.ctx.textBaseline = 'middle';
-    this.ctx.fillText(this.formatNumber(value), x + width / 2, y + height / 2 - 20);
+    stats.forEach((stat, index) => {
+      const x = startX + index * (cardWidth + gap);
 
-    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-    this.ctx.font = '18px Arial';
-    this.ctx.fillText(label.toUpperCase(), x + width / 2, y + height / 2 + 30);
+      ctx.fillStyle = 'rgba(255,255,255,0.1)';
+      ctx.fillRect(x, y, cardWidth, cardHeight);
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, cardWidth, cardHeight);
+
+      ctx.fillStyle = stat.color;
+      ctx.font = 'bold 36px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(this.formatNumber(this.data[stat.key]), x + cardWidth / 2, y + cardHeight / 2 - 15);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.font = '16px Arial';
+      ctx.fillText(stat.label.toUpperCase(), x + cardWidth / 2, y + cardHeight / 2 + 25);
+    });
   }
 
   formatNumber(num) {
@@ -321,132 +268,44 @@ class LiveCounter {
     return num.toLocaleString();
   }
 
-  drawStats() {
-    const cardWidth = 300;
-    const cardHeight = 180;
-    const gap = 40;
-    const totalWidth = (cardWidth * 5) + (gap * 4);
-    const startX = (CONFIG.width - totalWidth) / 2;
-    const y = CONFIG.height - cardHeight - 100;
-
-    const stats = [
-      { value: this.data.subscribers, label: 'Subscribers', color: '#ff6b6b' },
-      { value: this.data.totalViews, label: 'Total Views', color: '#4ecdc4' },
-      { value: this.data.videos, label: 'Videos', color: '#45b7d1' },
-      { value: this.data.liveViewers, label: 'Live Viewers', color: '#ff4757' },
-      { value: this.data.likes, label: 'Stream Likes', color: '#ffa502' }
-    ];
-
-    stats.forEach((stat, index) => {
-      const x = startX + (cardWidth + gap) * index;
-      this.drawStatCard(x, y, cardWidth, cardHeight, stat.value, stat.label, stat.color);
-    });
-  }
-
-  render() {
-    if (!this.isRunning) return;
-
-    this.ctx.clearRect(0, 0, CONFIG.width, CONFIG.height);
+  renderFrame() {
     this.interpolateValues();
     this.drawBackground();
     this.drawLiveBadge();
     this.drawChannelHeader();
     this.drawStats();
 
-    if (this.ffmpegProcess && !this.ffmpegProcess.stdin.destroyed) {
-      try {
-        const buffer = this.canvas.toBuffer('raw');
-        if (!this.ffmpegProcess.stdin.write(buffer)) {
-          console.log('⚠️  Skipping frame due to buffer pressure');
-        }
-      } catch (error) {
-        if (error.code !== 'EPIPE') {
-          logError('Render Frame', error);
-          this.stop();
-        }
-      }
-    }
-    this.frame++;
+    const buffer = this.canvas.toBuffer('image/png');
+    fs.writeFileSync(CONFIG.frameFile, buffer);
   }
 
-  startAnimation() {
-    const targetInterval = 1000 / CONFIG.fps;
-    let lastTime = Date.now();
-
-    const animate = () => {
-      if (!this.isRunning) return;
-      const currentTime = Date.now();
-      const deltaTime = currentTime - lastTime;
-      if (deltaTime >= targetInterval - 2) {
-        this.render();
-        lastTime = currentTime;
-      }
-      setImmediate(animate);
-    };
-
-    animate();
-
-    console.log('🔴 PERFORMANCE-OPTIMIZED YouTube Live Stream Started!');
-    console.log(`📺 Resolution: ${CONFIG.width}x${CONFIG.height}@${CONFIG.fps}fps`);
+  startFrameUpdates() {
+    this.renderFrame(); // render first frame immediately
+    setInterval(() => {
+      if (this.isRunning) this.renderFrame();
+    }, CONFIG.updateInterval);
   }
 
   stop() {
-    console.log('\n🛑 Stopping YouTube Live Stream...');
+    console.log('🛑 Stopping Live Stream...');
     this.isRunning = false;
-    this.dataIntervals.forEach(interval => clearInterval(interval));
 
-    if (this.ffmpegProcess && !this.ffmpegProcess.stdin.destroyed) {
-      try {
-        console.log('📝 Ending live stream...');
-        this.ffmpegProcess.stdin.end();
-        setTimeout(() => {
-          if (this.ffmpegProcess && !this.ffmpegProcess.killed) {
-            this.ffmpegProcess.kill('SIGTERM');
-            setTimeout(() => {
-              if (this.ffmpegProcess && !this.ffmpegProcess.killed) {
-                this.ffmpegProcess.kill('SIGKILL');
-              }
-            }, 3000);
-          }
-        }, 1000);
-      } catch (error) {
-        logError('Stop FFmpeg', error);
-      }
+    if (this.ffmpegProcess && !this.ffmpegProcess.killed) {
+      this.ffmpegProcess.kill('SIGTERM');
     }
-    console.log('✅ YouTube Live Stream stopped.');
+    console.log('✅ Live Stream stopped.');
   }
 }
 
-process.on('SIGINT', () => {
-  console.log('\n📛 Received interrupt signal...');
-  if (global.liveCounter) global.liveCounter.stop();
-  setTimeout(() => process.exit(0), 5000);
-});
+// Graceful exit
+process.on('SIGINT', () => { if (global.liveCounter) global.liveCounter.stop(); process.exit(0); });
+process.on('SIGTERM', () => { if (global.liveCounter) global.liveCounter.stop(); process.exit(0); });
 
-process.on('SIGTERM', () => {
-  console.log('\n📛 Received terminate signal...');
-  if (global.liveCounter) global.liveCounter.stop();
-  setTimeout(() => process.exit(0), 5000);
-});
-
-process.on('uncaughtException', (error) => {
-  logError('Uncaught Exception', error);
-  if (global.liveCounter) {
-    global.liveCounter.stop();
-  } else {
-    process.exit(1);
-  }
-});
-
-console.log('🚀 Starting MAXIMUM PERFORMANCE YouTube Live Counter...\n');
-
-// Check audio file
-if (!fs.existsSync('./play.mp3')) {
-  logError('Startup', 'Audio file "./play.mp3" not found!');
+console.log('🚀 Starting lightweight YouTube Live Counter...');
+if (!fs.existsSync(CONFIG.audioFile)) {
+  logError('Startup', `Audio file "${CONFIG.audioFile}" not found!`);
   process.exit(1);
 }
 
-// Start the stream
 global.liveCounter = new LiveCounter();
-
 module.exports = LiveCounter;
