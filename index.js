@@ -16,7 +16,7 @@ const CONFIG = {
   height: 1080,
   fps: 30,
   channelId: 'UC5vPGxCutFL9onTJHQN-UsA',
-  streamId: 'tXRuaacO-ZU',
+  streamId: 'rXPc_BcxybQ',
   outputFile: null,
   streamUrl: 'rtmp://a.rtmp.youtube.com/live2/s4m4-c1xt-d0vv-vayh-11ay',
   duration: 0,
