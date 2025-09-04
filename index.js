@@ -4,6 +4,12 @@ const https = require('https');
 const { spawn } = require('child_process');
 const path = require('path');
 
+// Centralized error logger
+function logError(source, error) {
+  const timestamp = new Date().toISOString();
+  console.error(`\n❌ [${timestamp}] [${source}]`, error);
+}
+
 // Configuration
 const CONFIG = {
   width: 1920,
@@ -33,20 +39,19 @@ class LiveCounter {
     };
     this.animatedValues = {};
     this.ffmpegProcess = null;
-    
-    // Animation state
+
     this.pulsePhase = 0;
     this.isRunning = true;
     this.startTime = Date.now();
     this.dataIntervals = [];
-    
+
     this.init();
   }
 
   async init() {
     try {
       if (CONFIG.audioFile && !fs.existsSync(CONFIG.audioFile)) {
-        console.error(`❌ Audio file not found: ${CONFIG.audioFile}`);
+        logError('Init', `Audio file not found: ${CONFIG.audioFile}`);
         process.exit(1);
       }
 
@@ -60,80 +65,63 @@ class LiveCounter {
       await this.fetchData();
       this.setupFFmpeg();
       this.startAnimation();
-      
-      // Reduced API call frequency for better performance
+
       const channelDataInterval = setInterval(() => {
         if (this.isRunning) this.fetchChannelData();
-      }, 60000); // Every 60 seconds
-      
+      }, 60000);
+
       const streamDataInterval = setInterval(() => {
         if (this.isRunning) this.fetchStreamData();
-      }, 10000); // Every 10 seconds
+      }, 10000);
 
       this.dataIntervals.push(channelDataInterval, streamDataInterval);
-
     } catch (error) {
-      console.error('Initialization error:', error);
+      logError('Initialization', error);
       this.stop();
     }
   }
 
   setupFFmpeg() {
     const args = [
-      // Video input
       '-f', 'rawvideo',
       '-vcodec', 'rawvideo',
       '-pix_fmt', 'rgba',
       '-s', `${CONFIG.width}x${CONFIG.height}`,
       '-r', CONFIG.fps.toString(),
       '-i', '-',
-      
-      // Audio input
       '-stream_loop', '-1',
       '-i', CONFIG.audioFile,
-      
-      // **ULTRA-FAST ENCODING FOR MAXIMUM FPS**
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-tune', 'zerolatency',
-      
-      // **SIMPLIFIED BITRATE SETTINGS**
-      '-crf', '30', // Higher CRF for faster encoding
+      '-crf', '30',
       '-maxrate', '7000k',
       '-bufsize', '4000k',
-      
       '-pix_fmt', 'yuv420p',
-      '-g', '30', // GOP size
-      '-threads', '0', // Use all CPU threads
-      '-x264-params', 'sliced-threads=1:sync-lookahead=0', // Performance optimizations
-      
-      // **FAST AUDIO ENCODING**
+      '-g', '30',
+      '-threads', '0',
+      '-x264-params', 'sliced-threads=1:sync-lookahead=0',
       '-c:a', 'aac',
       '-b:a', '96k',
       '-ar', '44100',
       '-ac', '2',
-      
-      // Stream mapping
       '-map', '0:v',
       '-map', '1:a',
-      
-      // Output
       '-f', 'flv',
       CONFIG.streamUrl
     ];
 
     console.log('⚡ Starting MAXIMUM PERFORMANCE YouTube Live Stream...');
     console.log(`🚀 Encoding: Ultra-fast preset for 30 FPS delivery`);
-    console.log(`🎯 Target: Consistent frame delivery over quality`);
 
-    this.ffmpegProcess = spawn('ffmpeg', args, { 
+    this.ffmpegProcess = spawn('ffmpeg', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: false
     });
 
     this.ffmpegProcess.stdin.on('error', (error) => {
       if (error.code !== 'EPIPE') {
-        console.error('FFmpeg stdin error:', error);
+        logError('FFmpeg stdin', error);
       }
     });
 
@@ -143,24 +131,19 @@ class LiveCounter {
         if (this.frame % 150 === 0) {
           const bitrateMatch = message.match(/bitrate=\s*([0-9.]+)kbits\/s/);
           const fpsMatch = message.match(/fps=\s*([0-9.]+)/);
-          
           if (bitrateMatch && fpsMatch) {
             const currentFps = parseFloat(fpsMatch[1]);
             const status = currentFps >= 25 ? '✅' : currentFps >= 20 ? '⚠️' : '❌';
             console.log(`${status} Bitrate: ${bitrateMatch[1]} Kbps | FPS: ${currentFps} | Frame: ${this.frame}`);
-            
-            if (currentFps < 20) {
-              console.log('⚠️  Low FPS detected - consider reducing video complexity');
-            }
           }
         }
-      } else if (message.includes('error') || message.includes('Error')) {
-        console.error(`❌ FFmpeg Error: ${message}`);
+      } else if (message.toLowerCase().includes('error')) {
+        logError('FFmpeg stderr', message);
       }
     });
 
     this.ffmpegProcess.on('error', (error) => {
-      console.error('❌ FFmpeg process error:', error);
+      logError('FFmpeg process', error);
     });
 
     this.ffmpegProcess.on('close', (code) => {
@@ -175,7 +158,7 @@ class LiveCounter {
         this.fetchStreamData()
       ]);
     } catch (error) {
-      // Silently handle errors to not impact performance
+      logError('Fetch Data', error);
     }
   }
 
@@ -183,7 +166,7 @@ class LiveCounter {
     try {
       const data = await this.httpGet(`https://mixerno.space/api/youtube-channel-counter/user/${CONFIG.channelId}`);
       const parsedData = JSON.parse(data);
-      
+
       const user = Object.fromEntries(parsedData.user.map(u => [u.value, u.count]));
       const counts = Object.fromEntries(parsedData.counts.map(c => [c.value, c.count]));
 
@@ -196,11 +179,11 @@ class LiveCounter {
         try {
           this.data.channelAvatar = await loadImage(user.pfp);
         } catch (imgError) {
-          // Ignore avatar loading errors
+          logError('Avatar Load', imgError.message);
         }
       }
     } catch (error) {
-      // Silently handle errors
+      logError('Channel Data', error.message);
     }
   }
 
@@ -208,12 +191,13 @@ class LiveCounter {
     try {
       const data = await this.httpGet(`https://mixerno.space/api/youtube-stream-counter/user/${CONFIG.streamId}`);
       const parsedData = JSON.parse(data);
-      
+
       const counts = Object.fromEntries(parsedData.counts.map(c => [c.value, c.count || 0]));
 
       this.updateAnimatedValue('liveViewers', counts.viewers);
       this.updateAnimatedValue('likes', counts.likes);
     } catch (error) {
+      logError('Stream Data', error.message);
       this.updateAnimatedValue('liveViewers', 0);
       this.updateAnimatedValue('likes', 0);
     }
@@ -223,7 +207,7 @@ class LiveCounter {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Request timed out'));
-      }, 3000); // Very short timeout
+      }, 3000);
 
       https.get(url, { timeout: 2000 }, (res) => {
         let data = '';
@@ -234,6 +218,7 @@ class LiveCounter {
         });
       }).on('error', (error) => {
         clearTimeout(timeout);
+        logError('HTTP GET', `${url} → ${error.message}`);
         reject(error);
       });
     });
@@ -251,7 +236,7 @@ class LiveCounter {
       const anim = this.animatedValues[key];
       const diff = anim.target - anim.current;
       if (Math.abs(diff) > 1) {
-        anim.current += diff * 0.15; // Faster animation
+        anim.current += diff * 0.15;
       } else {
         anim.current = anim.target;
       }
@@ -259,14 +244,11 @@ class LiveCounter {
     }
   }
 
-  // **ULTRA-SIMPLIFIED RENDERING FOR MAXIMUM PERFORMANCE**
-  
   drawBackground() {
-    // Solid gradient - no animation to save performance
     const gradient = this.ctx.createLinearGradient(0, 0, CONFIG.width, CONFIG.height);
     gradient.addColorStop(0, '#0f0f23');
     gradient.addColorStop(1, '#16213e');
-    
+
     this.ctx.fillStyle = gradient;
     this.ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
   }
@@ -274,25 +256,22 @@ class LiveCounter {
   drawLiveBadge() {
     const x = CONFIG.width / 2;
     const y = 80;
-    
-    // Simple pulsing effect
     const scale = 1 + Math.sin(this.pulsePhase) * 0.05;
-    this.pulsePhase += 0.05; // Slower animation
-    
+    this.pulsePhase += 0.05;
+
     this.ctx.save();
     this.ctx.translate(x, y);
     this.ctx.scale(scale, scale);
 
-    // Simple red rectangle
     this.ctx.fillStyle = '#ff0000';
     this.ctx.fillRect(-100, -25, 200, 50);
-    
+
     this.ctx.fillStyle = 'white';
     this.ctx.font = 'bold 28px Arial';
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
     this.ctx.fillText('🔴 LIVE', 0, 0);
-    
+
     this.ctx.restore();
   }
 
@@ -300,7 +279,6 @@ class LiveCounter {
     const centerX = CONFIG.width / 2;
     const y = 200;
 
-    // Draw avatar without any effects
     if (this.data.channelAvatar) {
       this.ctx.save();
       this.ctx.beginPath();
@@ -310,7 +288,6 @@ class LiveCounter {
       this.ctx.restore();
     }
 
-    // Simple white text
     this.ctx.fillStyle = '#ffffff';
     this.ctx.font = 'bold 48px Arial';
     this.ctx.textAlign = 'left';
@@ -319,38 +296,28 @@ class LiveCounter {
   }
 
   drawStatCard(x, y, width, height, value, label, color) {
-    // Simple card background
     this.ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
     this.ctx.fillRect(x, y, width, height);
 
-    // Simple border
     this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
     this.ctx.lineWidth = 1;
     this.ctx.strokeRect(x, y, width, height);
 
-    // Value
     this.ctx.fillStyle = color;
     this.ctx.font = 'bold 56px Arial';
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
-    
-    const formattedValue = this.formatNumber(value);
-    this.ctx.fillText(formattedValue, x + width / 2, y + height / 2 - 20);
+    this.ctx.fillText(this.formatNumber(value), x + width / 2, y + height / 2 - 20);
 
-    // Label
     this.ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
     this.ctx.font = '18px Arial';
     this.ctx.fillText(label.toUpperCase(), x + width / 2, y + height / 2 + 30);
   }
 
   formatNumber(num) {
-    if (num >= 1000000000) {
-      return (num / 1000000000).toFixed(1) + 'B';
-    } else if (num >= 1000000) {
-      return (num / 1000000).toFixed(1) + 'M';
-    } else if (num >= 1000) {
-      return (num / 1000).toFixed(1) + 'K';
-    }
+    if (num >= 1_000_000_000) return (num / 1_000_000_000).toFixed(1) + 'B';
+    if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M';
+    if (num >= 1_000) return (num / 1_000).toFixed(1) + 'K';
     return num.toLocaleString();
   }
 
@@ -379,87 +346,62 @@ class LiveCounter {
   render() {
     if (!this.isRunning) return;
 
-    // Clear canvas
     this.ctx.clearRect(0, 0, CONFIG.width, CONFIG.height);
-    
-    // Update animated values
     this.interpolateValues();
-    
-    // Draw all elements
     this.drawBackground();
     this.drawLiveBadge();
     this.drawChannelHeader();
     this.drawStats();
 
-    // Send frame to FFmpeg with error handling
     if (this.ffmpegProcess && !this.ffmpegProcess.stdin.destroyed) {
       try {
         const buffer = this.canvas.toBuffer('raw');
-        
-        // Write with backpressure handling
         if (!this.ffmpegProcess.stdin.write(buffer)) {
-          // If buffer is full, skip this frame to maintain FPS
           console.log('⚠️  Skipping frame due to buffer pressure');
         }
       } catch (error) {
         if (error.code !== 'EPIPE') {
-          console.error('Error writing to FFmpeg:', error);
+          logError('Render Frame', error);
           this.stop();
         }
       }
     }
-
     this.frame++;
   }
 
   startAnimation() {
-    // **HIGH-PERFORMANCE FRAME TIMING**
-    const targetInterval = 1000 / CONFIG.fps; // 33.33ms
+    const targetInterval = 1000 / CONFIG.fps;
     let lastTime = Date.now();
 
     const animate = () => {
       if (!this.isRunning) return;
-      
       const currentTime = Date.now();
       const deltaTime = currentTime - lastTime;
-
-      // Only render if enough time has passed
-      if (deltaTime >= targetInterval - 2) { // Small tolerance
+      if (deltaTime >= targetInterval - 2) {
         this.render();
         lastTime = currentTime;
       }
-      
-      // Use setImmediate for maximum performance
       setImmediate(animate);
     };
 
     animate();
-    
+
     console.log('🔴 PERFORMANCE-OPTIMIZED YouTube Live Stream Started!');
-    console.log(`⚡ Ultra-fast rendering for consistent 30 FPS`);
-    console.log(`🎵 Audio: ${path.basename(CONFIG.audioFile)}`);
     console.log(`📺 Resolution: ${CONFIG.width}x${CONFIG.height}@${CONFIG.fps}fps`);
-    console.log(`\n🚀 Stream optimized for maximum FPS delivery!`);
-    console.log(`📱 Monitor YouTube Studio - should show ~30 FPS now`);
   }
 
   stop() {
     console.log('\n🛑 Stopping YouTube Live Stream...');
     this.isRunning = false;
-
-    // Clear all intervals
     this.dataIntervals.forEach(interval => clearInterval(interval));
 
-    // Close FFmpeg properly
     if (this.ffmpegProcess && !this.ffmpegProcess.stdin.destroyed) {
       try {
         console.log('📝 Ending live stream...');
         this.ffmpegProcess.stdin.end();
-        
         setTimeout(() => {
           if (this.ffmpegProcess && !this.ffmpegProcess.killed) {
             this.ffmpegProcess.kill('SIGTERM');
-            
             setTimeout(() => {
               if (this.ffmpegProcess && !this.ffmpegProcess.killed) {
                 this.ffmpegProcess.kill('SIGKILL');
@@ -467,42 +409,28 @@ class LiveCounter {
             }, 3000);
           }
         }, 1000);
-        
       } catch (error) {
-        console.error('Error stopping FFmpeg:', error);
+        logError('Stop FFmpeg', error);
       }
     }
-
     console.log('✅ YouTube Live Stream stopped.');
   }
 }
 
-// **OPTIMIZED PROCESS HANDLERS**
 process.on('SIGINT', () => {
   console.log('\n📛 Received interrupt signal...');
-  if (global.liveCounter) {
-    global.liveCounter.stop();
-  }
-  
-  setTimeout(() => {
-    process.exit(0);
-  }, 5000);
+  if (global.liveCounter) global.liveCounter.stop();
+  setTimeout(() => process.exit(0), 5000);
 });
 
 process.on('SIGTERM', () => {
   console.log('\n📛 Received terminate signal...');
-  if (global.liveCounter) {
-    global.liveCounter.stop();
-  }
-  
-  setTimeout(() => {
-    process.exit(0);
-  }, 5000);
+  if (global.liveCounter) global.liveCounter.stop();
+  setTimeout(() => process.exit(0), 5000);
 });
 
-// Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
-  console.error('💥 Uncaught Exception:', error);
+  logError('Uncaught Exception', error);
   if (global.liveCounter) {
     global.liveCounter.stop();
   } else {
@@ -510,18 +438,11 @@ process.on('uncaughtException', (error) => {
   }
 });
 
-// **PERFORMANCE CHECK BEFORE STARTING**
 console.log('🚀 Starting MAXIMUM PERFORMANCE YouTube Live Counter...\n');
-console.log('⚡ Performance Optimizations:');
-console.log('   - Ultra-fast H.264 encoding');
-console.log('   - Simplified visual effects');
-console.log('   - Reduced API call frequency');
-console.log('   - Optimized frame timing');
-console.log('   - Buffer backpressure handling\n');
 
 // Check audio file
 if (!fs.existsSync('./play.mp3')) {
-  console.error('❌ Audio file "./play.mp3" not found!');
+  logError('Startup', 'Audio file "./play.mp3" not found!');
   process.exit(1);
 }
 
