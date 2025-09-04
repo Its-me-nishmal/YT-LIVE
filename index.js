@@ -2,24 +2,26 @@ const { createCanvas, loadImage, registerFont } = require('canvas');
 const fs = require('fs');
 const https = require('https');
 const { spawn } = require('child_process');
-const path = require('path');
 
-// Centralized error logger
+// Error logger
 function logError(source, error) {
   const timestamp = new Date().toISOString();
   console.error(`❌ [${timestamp}] [${source}]`, error);
 }
 
-// CONFIGURATION
+// CONFIG
 const CONFIG = {
   width: 1280,
   height: 720,
-  updateInterval: 100, // 100ms → 10 FPS
+  fps: 10,               // animation FPS
+  apiInterval: 5000,      // fetch API every 5 sec
   channelId: 'UC5vPGxCutFL9onTJHQN-UsA',
-  streamId: 'NCkXV1g1Zb8',
+  streamId: 'NAjWQNHnVD4',
   audioFile: './play.mp3',
   frameFile: './frame.png',
-  streamUrl: 'rtmp://a.rtmp.youtube.com/live2/s4m4-c1xt-d0vv-vayh-11ay'
+  streamUrl: 'rtmp://a.rtmp.youtube.com/live2/s4m4-c1xt-d0vv-vayh-11ay',
+  videoBitrate: '6800k',
+  bufferSize: '13600k'
 };
 
 class LiveCounter {
@@ -37,6 +39,8 @@ class LiveCounter {
     };
     this.animatedValues = {};
     this.isRunning = true;
+    this.ffmpegProcess = null;
+    this.pulsePhase = 0;
 
     this.init();
   }
@@ -56,8 +60,8 @@ class LiveCounter {
       }
 
       await this.fetchData();
-      this.startFFmpegLoop();
-      this.startFrameUpdates();
+      this.startFFmpeg();
+      this.startAnimation();
       this.setupIntervals();
     } catch (error) {
       logError('Initialization', error);
@@ -66,22 +70,24 @@ class LiveCounter {
   }
 
   setupIntervals() {
-    setInterval(() => { if (this.isRunning) this.fetchChannelData(); }, 60000);
-    setInterval(() => { if (this.isRunning) this.fetchStreamData(); }, 10000);
+    // Fetch channel & stream data every 5 seconds
+    setInterval(() => {
+      if (this.isRunning) this.fetchData();
+    }, CONFIG.apiInterval);
   }
 
-  startFFmpegLoop() {
+  startFFmpeg() {
     const args = [
       '-re',
       '-loop', '1',
-      '-framerate', '10', // match 10 FPS
+      '-framerate', CONFIG.fps.toString(),
       '-i', CONFIG.frameFile,
       '-i', CONFIG.audioFile,
       '-c:v', 'libx264',
       '-preset', 'veryfast',
-      '-b:v', '6800k',       // Recommended YouTube bitrate
-      '-maxrate', '6800k',
-      '-bufsize', '13600k',
+      '-b:v', CONFIG.videoBitrate,
+      '-maxrate', CONFIG.videoBitrate,
+      '-bufsize', CONFIG.bufferSize,
       '-crf', '23',
       '-c:a', 'aac',
       '-b:a', '128k',
@@ -91,19 +97,27 @@ class LiveCounter {
       CONFIG.streamUrl
     ];
 
-    console.log('⚡ Starting YouTube Live Stream with recommended bitrate...');
-    this.ffmpegProcess = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const startProcess = () => {
+      console.log('⚡ Starting YouTube Live FFmpeg...');
+      this.ffmpegProcess = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
 
-    this.ffmpegProcess.stderr.on('data', data => {
-      const message = data.toString();
-      if (message.toLowerCase().includes('error')) {
-        logError('FFmpeg stderr', message);
-      }
-    });
+      this.ffmpegProcess.stderr.on('data', data => {
+        const msg = data.toString();
+        if (msg.toLowerCase().includes('error')) logError('FFmpeg stderr', msg);
+      });
 
-    this.ffmpegProcess.on('close', code => {
-      console.log(`📹 FFmpeg exited with code ${code}`);
-    });
+      this.ffmpegProcess.on('close', code => {
+        console.log(`FFmpeg closed with code ${code}, restarting...`);
+        if (this.isRunning) setTimeout(startProcess, 2000);
+      });
+
+      this.ffmpegProcess.on('error', err => {
+        logError('FFmpeg process', err);
+        if (this.isRunning) setTimeout(startProcess, 2000);
+      });
+    };
+
+    startProcess();
   }
 
   async fetchData() {
@@ -184,13 +198,20 @@ class LiveCounter {
 
   drawLiveBadge() {
     const ctx = this.ctx;
+    const scale = 1 + Math.sin(this.pulsePhase) * 0.05;
+    this.pulsePhase += 0.05;
+
+    ctx.save();
+    ctx.translate(CONFIG.width / 2, 75);
+    ctx.scale(scale, scale);
     ctx.fillStyle = '#ff0000';
-    ctx.fillRect(CONFIG.width / 2 - 100, 50, 200, 50);
+    ctx.fillRect(-100, -25, 200, 50);
     ctx.fillStyle = 'white';
     ctx.font = 'bold 28px Arial';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('🔴 LIVE', CONFIG.width / 2, 75);
+    ctx.fillText('🔴 LIVE', 0, 0);
+    ctx.restore();
   }
 
   drawChannelHeader() {
@@ -242,19 +263,12 @@ class LiveCounter {
       ctx.font = 'bold 36px Arial';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(this.formatNumber(this.data[stat.key]), x + cardWidth / 2, y + cardHeight / 2 - 15);
+      ctx.fillText(this.data[stat.key].toLocaleString(), x + cardWidth / 2, y + cardHeight / 2 - 15);
 
       ctx.fillStyle = 'rgba(255,255,255,0.9)';
       ctx.font = '16px Arial';
       ctx.fillText(stat.label.toUpperCase(), x + cardWidth / 2, y + cardHeight / 2 + 25);
     });
-  }
-
-  formatNumber(num) {
-    if (num >= 1_000_000_000) return (num / 1_000_000_000).toFixed(1) + 'B';
-    if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M';
-    if (num >= 1_000) return (num / 1_000).toFixed(1) + 'K';
-    return num.toLocaleString();
   }
 
   renderFrame() {
@@ -263,21 +277,20 @@ class LiveCounter {
     this.drawLiveBadge();
     this.drawChannelHeader();
     this.drawStats();
-
-    const buffer = this.canvas.toBuffer('image/png');
-    fs.writeFileSync(CONFIG.frameFile, buffer);
+    fs.writeFileSync(CONFIG.frameFile, this.canvas.toBuffer('image/png'));
   }
 
-  startFrameUpdates() {
-    this.renderFrame(); // render first frame
-    setInterval(() => { if (this.isRunning) this.renderFrame(); }, CONFIG.updateInterval);
+  startAnimation() {
+    setInterval(() => {
+      if (!this.isRunning) return;
+      this.renderFrame();
+    }, 1000 / CONFIG.fps);
   }
 
   stop() {
-    console.log('🛑 Stopping Live Stream...');
+    console.log('🛑 Stopping Live Counter...');
     this.isRunning = false;
     if (this.ffmpegProcess && !this.ffmpegProcess.killed) this.ffmpegProcess.kill('SIGTERM');
-    console.log('✅ Live Stream stopped.');
   }
 }
 
