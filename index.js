@@ -71,7 +71,11 @@ class LiveCounter {
 
   setupIntervals() {
     setInterval(() => {
-      if (this.isRunning) this.fetchData();
+      if (this.isRunning) {
+        this.fetchData()
+          .then(() => console.log('🔄 Data updated'))
+          .catch(err => console.error('⚠️ Fetch error', err.message));
+      }
     }, CONFIG.apiInterval);
   }
 
@@ -142,6 +146,10 @@ class LiveCounter {
           logError('Avatar Load', imgError.message);
         }
       }
+
+      // Show in console
+      console.log(`📊 Channel: ${this.data.channelName}`);
+      console.log(`Subscribers: ${counts.subscribers}, Views: ${counts.views}, Videos: ${counts.videos}`);
     } catch (error) {
       logError('Channel Data', error.message);
     }
@@ -154,6 +162,8 @@ class LiveCounter {
       const counts = Object.fromEntries(parsed.counts.map(c => [c.value, c.count || 0]));
       this.updateAnimatedValue('liveViewers', counts.viewers);
       this.updateAnimatedValue('likes', counts.likes);
+
+      console.log(`Live Viewers: ${counts.viewers}, Stream Likes: ${counts.likes}`);
     } catch (error) {
       logError('Stream Data', error.message);
       this.updateAnimatedValue('liveViewers', 0);
@@ -163,12 +173,33 @@ class LiveCounter {
 
   httpGet(url) {
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Request timed out')), 3000);
-      https.get(url, { timeout: 2000 }, res => {
+      const timeoutDuration = 3000; // 3 seconds timeout
+      const timeout = setTimeout(() => reject(new Error('Request timed out')), timeoutDuration);
+
+      const options = {
+        headers: {
+          "accept": "application/json, text/javascript, */*; q=0.01",
+          "accept-language": "en-US,en;q=0.9,ml;q=0.8",
+          "sec-ch-ua": "\"Not;A=Brand\";v=\"99\", \"Google Chrome\";v=\"139\", \"Chromium\";v=\"139\"",
+          "sec-ch-ua-mobile": "?1",
+          "sec-ch-ua-platform": "\"Android\"",
+          "referer": "https://gh.akshatmittal.com/"
+        },
+        timeout: timeoutDuration
+      };
+
+      https.get(url, options, res => {
         let data = '';
         res.on('data', chunk => data += chunk);
-        res.on('end', () => { clearTimeout(timeout); resolve(data); });
-      }).on('error', error => { clearTimeout(timeout); logError('HTTP GET', `${url} → ${error.message}`); reject(error); });
+        res.on('end', () => {
+          clearTimeout(timeout);
+          resolve(data);
+        });
+      }).on('error', error => {
+        clearTimeout(timeout);
+        logError('HTTP GET', `${url} → ${error.message}`);
+        reject(error);
+      });
     });
   }
 
@@ -275,7 +306,6 @@ class LiveCounter {
     this.drawChannelHeader();
     this.drawStats();
 
-    // Write PNG safely
     try {
       const tmpFile = CONFIG.frameFile + '.tmp';
       fs.writeFileSync(tmpFile, this.canvas.toBuffer('image/png'));
