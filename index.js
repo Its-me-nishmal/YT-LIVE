@@ -14,7 +14,7 @@ const CONFIG = {
   width: 1280,
   height: 720,
   fps: 10,               // animation FPS
-  apiInterval: 5000,      // fetch API every 5 sec
+  apiInterval: 5000,     // fetch API every 5 sec
   channelId: 'UC5vPGxCutFL9onTJHQN-UsA',
   streamId: 'NAjWQNHnVD4',
   audioFile: './play.mp3',
@@ -70,7 +70,6 @@ class LiveCounter {
   }
 
   setupIntervals() {
-    // Fetch channel & stream data every 5 seconds
     setInterval(() => {
       if (this.isRunning) this.fetchData();
     }, CONFIG.apiInterval);
@@ -248,54 +247,69 @@ class LiveCounter {
       { key: 'likes', label: 'Stream Likes', color: '#ffa502' }
     ];
 
-    const startX = (CONFIG.width - (stats.length * cardWidth + gap * (stats.length - 1))) / 2;
-    const y = CONFIG.height - cardHeight - 50;
+    const totalWidth = stats.length * cardWidth + (stats.length - 1) * gap;
+    let startX = (CONFIG.width - totalWidth) / 2;
+    const y = CONFIG.height - cardHeight - 80;
 
-    stats.forEach((stat, index) => {
-      const x = startX + index * (cardWidth + gap);
+    stats.forEach(stat => {
       ctx.fillStyle = 'rgba(255,255,255,0.1)';
-      ctx.fillRect(x, y, cardWidth, cardHeight);
+      ctx.fillRect(startX, y, cardWidth, cardHeight);
       ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x, y, cardWidth, cardHeight);
-
+      ctx.strokeRect(startX, y, cardWidth, cardHeight);
       ctx.fillStyle = stat.color;
       ctx.font = 'bold 36px Arial';
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(this.data[stat.key].toLocaleString(), x + cardWidth / 2, y + cardHeight / 2 - 15);
-
-      ctx.fillStyle = 'rgba(255,255,255,0.9)';
-      ctx.font = '16px Arial';
-      ctx.fillText(stat.label.toUpperCase(), x + cardWidth / 2, y + cardHeight / 2 + 25);
+      ctx.fillText(this.data[stat.key].toLocaleString(), startX + cardWidth / 2, y + 50);
+      ctx.fillStyle = 'white';
+      ctx.font = '18px Arial';
+      ctx.fillText(stat.label.toUpperCase(), startX + cardWidth / 2, y + 90);
+      startX += cardWidth + gap;
     });
   }
 
   renderFrame() {
+    this.ctx.clearRect(0, 0, CONFIG.width, CONFIG.height);
     this.interpolateValues();
     this.drawBackground();
     this.drawLiveBadge();
     this.drawChannelHeader();
     this.drawStats();
-    fs.writeFileSync(CONFIG.frameFile, this.canvas.toBuffer('image/png'));
+
+    // Write PNG safely
+    try {
+      const tmpFile = CONFIG.frameFile + '.tmp';
+      fs.writeFileSync(tmpFile, this.canvas.toBuffer('image/png'));
+      fs.renameSync(tmpFile, CONFIG.frameFile);
+    } catch (error) {
+      logError('Render Frame', error);
+    }
   }
 
   startAnimation() {
-    setInterval(() => {
+    const interval = 1000 / CONFIG.fps;
+    const loop = () => {
       if (!this.isRunning) return;
       this.renderFrame();
-    }, 1000 / CONFIG.fps);
+      setTimeout(loop, interval);
+    };
+    loop();
+    console.log('🎬 Live counter animation started...');
   }
 
   stop() {
-    console.log('🛑 Stopping Live Counter...');
     this.isRunning = false;
-    if (this.ffmpegProcess && !this.ffmpegProcess.killed) this.ffmpegProcess.kill('SIGTERM');
+    if (this.ffmpegProcess && !this.ffmpegProcess.killed) this.ffmpegProcess.kill('SIGKILL');
+    console.log('🛑 Live counter stopped');
   }
 }
 
-// Graceful exit
-process.on('SIGINT', () => { if (global.liveCounter) global.liveCounter.stop(); process.exit(); });
-process.on('SIGTERM', () => { if (global.liveCounter) global.liveCounter.stop(); process.exit(); });
+// Handle process signals
+process.on('SIGINT', () => { if (global.liveCounter) global.liveCounter.stop(); setTimeout(() => process.exit(0), 2000); });
+process.on('SIGTERM', () => { if (global.liveCounter) global.liveCounter.stop(); setTimeout(() => process.exit(0), 2000); });
+process.on('uncaughtException', err => { logError('Uncaught Exception', err); if (global.liveCounter) global.liveCounter.stop(); else process.exit(1); });
 
+// Start counter
+if (!fs.existsSync(CONFIG.audioFile)) { logError('Startup', 'Audio file missing'); process.exit(1); }
 global.liveCounter = new LiveCounter();
+
+module.exports = LiveCounter;
